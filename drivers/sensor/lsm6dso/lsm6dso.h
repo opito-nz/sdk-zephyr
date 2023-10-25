@@ -108,6 +108,8 @@ struct lsm6dso_data {
 	sensor_trigger_handler_t handler_drdy_acc;
 	sensor_trigger_handler_t handler_drdy_gyr;
 	sensor_trigger_handler_t handler_drdy_temp;
+	sensor_trigger_handler_t handler_motion_acc;
+	sensor_trigger_handler_t handler_stationary_acc;
 
 #if defined(CONFIG_LSM6DSO_TRIGGER_OWN_THREAD)
 	K_KERNEL_STACK_MEMBER(thread_stack, CONFIG_LSM6DSO_THREAD_STACK_SIZE);
@@ -134,6 +136,7 @@ int lsm6dso_trigger_set(const struct device *dev,
 			sensor_trigger_handler_t handler);
 
 int lsm6dso_init_interrupt(const struct device *dev);
+
 #endif
 
 #endif /* ZEPHYR_DRIVERS_SENSOR_LSM6DSO_LSM6DSO_H_ */

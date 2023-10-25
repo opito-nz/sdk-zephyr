@@ -47,10 +47,7 @@ static int lsm6dso_enable_t_int(const struct device *dev, int enable)
 }
 #endif
 
-/**
- * lsm6dso_enable_xl_int - XL enable selected int pin to generate interrupt
- */
-static int lsm6dso_enable_xl_int(const struct device *dev, int enable)
+static int lsm6dso_enable_xl_drdy_int(const struct device *dev, int enable)
 {
 	const struct lsm6dso_config *cfg = dev->config;
 	stmdev_ctx_t *ctx = (stmdev_ctx_t *)&cfg->ctx;
@@ -80,6 +77,70 @@ static int lsm6dso_enable_xl_int(const struct device *dev, int enable)
 		int2_ctrl.int2_drdy_xl = enable;
 		return lsm6dso_write_reg(ctx, LSM6DSO_INT2_CTRL,
 					 (uint8_t *)&int2_ctrl, 1);
+	}
+}
+
+static int lsm6dso_enable_xl_delta_int(const struct device *dev,
+									   int enable)
+{
+	/* See ST AN5192 section 5.6 "Activity/inactivity and motion/stationary
+	 * recognition" for further details on how this works. */
+	const struct lsm6dso_config *cfg = dev->config;
+	stmdev_ctx_t *ctx = (stmdev_ctx_t *)&cfg->ctx;
+	int rc;
+
+	/* Set up for motion/stationary state change interrupts, and use a slope
+	 * filter controlled from WAKE_UP_DUR and WAKE_UP_THS registers. */
+	lsm6dso_tap_cfg0_t tap_cfg0 = {
+		.int_clr_on_read = 0,
+		.sleep_status_on_int = 0,
+		.slope_fds = 0, // slope filter
+		.tap_x_en = 0,
+		.tap_y_en = 0,
+		.tap_z_en = 0,
+		.lir = 0
+	};
+
+	rc = lsm6dso_write_reg(ctx, LSM6DSO_TAP_CFG0, (uint8_t *)&tap_cfg0, 1);
+	if (rc < 0)
+		return rc;
+
+	/* Enable/disable the algorithm interrupt generation, and put into the
+	 * motion/stationary detection mode. */
+	lsm6dso_tap_cfg2_t tap_cfg2;
+	rc = lsm6dso_read_reg(ctx, LSM6DSO_TAP_CFG2, (uint8_t *)&tap_cfg2, 1);
+	if (rc < 0)
+		return rc;
+
+	tap_cfg2.interrupts_enable = enable;
+	tap_cfg2.inact_en = 0;
+	rc = lsm6dso_write_reg(ctx, LSM6DSO_TAP_CFG2, (uint8_t *)&tap_cfg2, 1);
+	if (rc < 0)
+		return rc;
+
+	/* Route the algorithm interrupt to the correct IO pin. */
+	if (cfg->int_pin == 1) {
+		lsm6dso_md1_cfg_t md1_cfg;
+		rc = lsm6dso_read_reg(ctx, LSM6DSO_MD1_CFG, (uint8_t *)&md1_cfg, 1);
+		if (rc < 0)
+			return rc;
+
+		md1_cfg.int1_sleep_change = enable;
+
+		rc = lsm6dso_write_reg(ctx, LSM6DSO_MD1_CFG, (uint8_t *)&md1_cfg, 1);
+		if (rc < 0)	
+			return rc;
+	} else {
+		lsm6dso_md2_cfg_t md2_cfg;
+		rc = lsm6dso_read_reg(ctx, LSM6DSO_MD2_CFG, (uint8_t *)&md2_cfg, 1);
+		if (rc < 0)
+			return rc;
+
+		md2_cfg.int2_sleep_change = enable;
+
+		rc = lsm6dso_write_reg(ctx, LSM6DSO_MD2_CFG, (uint8_t *)&md2_cfg, 1);
+		if (rc < 0)	
+			return rc;
 	}
 }
 
@@ -134,11 +195,14 @@ int lsm6dso_trigger_set(const struct device *dev,
 	}
 
 	if (trig->chan == SENSOR_CHAN_ACCEL_XYZ) {
-		lsm6dso->handler_drdy_acc = handler;
-		if (handler) {
-			return lsm6dso_enable_xl_int(dev, LSM6DSO_EN_BIT);
-		} else {
-			return lsm6dso_enable_xl_int(dev, LSM6DSO_DIS_BIT);
+		if (trig->type == SENSOR_TRIG_DATA_READY) {
+			lsm6dso->handler_drdy_acc = handler;
+			return lsm6dso_enable_xl_drdy_int(
+				dev, handler ? LSM6DSO_EN_BIT : LSM6DSO_DIS_BIT);
+		} else if (trig->type == SENSOR_TRIG_MOTION) {
+			lsm6dso->handler_motion_acc = handler;
+			return lsm6dso_enable_xl_delta_int(
+				dev, handler ? LSM6DSO_EN_BIT : LSM6DSO_DIS_BIT);
 		}
 	} else if (trig->chan == SENSOR_CHAN_GYRO_XYZ) {
 		lsm6dso->handler_drdy_gyr = handler;
@@ -168,41 +232,49 @@ int lsm6dso_trigger_set(const struct device *dev,
  */
 static void lsm6dso_handle_interrupt(const struct device *dev)
 {
-	struct lsm6dso_data *lsm6dso = dev->data;
-	struct sensor_trigger drdy_trigger = {
-		.type = SENSOR_TRIG_DATA_READY,
-	};
 	const struct lsm6dso_config *cfg = dev->config;
+	struct lsm6dso_data *lsm6dso = dev->data;
 	stmdev_ctx_t *ctx = (stmdev_ctx_t *)&cfg->ctx;
-	lsm6dso_status_reg_t status;
+	int rc;
+	lsm6dso_all_sources_t int_srcs;
+	struct sensor_trigger trigger;
 
-	while (1) {
-		if (lsm6dso_status_reg_get(ctx, &status) < 0) {
-			LOG_DBG("failed reading status reg");
-			return;
-		}
+	rc = lsm6dso_all_sources_get(ctx, &int_srcs);
+	if (rc < 0) {
+		LOG_ERR("Failed reading int srcs (err=%d)", rc);
+		return;
+	}
 
-		if ((status.xlda == 0) && (status.gda == 0)
-#if defined(CONFIG_LSM6DSO_ENABLE_TEMP)
-					&& (status.tda == 0)
-#endif
-					) {
-			break;
-		}
+	if ((int_srcs.drdy_xl) && (lsm6dso->handler_drdy_acc != NULL)) {
+		trigger.chan = SENSOR_CHAN_ACCEL_XYZ;
+		trigger.type = SENSOR_TRIG_DATA_READY;
+		lsm6dso->handler_drdy_acc(dev, &trigger);
+	}
 
-		if ((status.xlda) && (lsm6dso->handler_drdy_acc != NULL)) {
-			lsm6dso->handler_drdy_acc(dev, &drdy_trigger);
-		}
-
-		if ((status.gda) && (lsm6dso->handler_drdy_gyr != NULL)) {
-			lsm6dso->handler_drdy_gyr(dev, &drdy_trigger);
-		}
+	if ((int_srcs.drdy_g) && (lsm6dso->handler_drdy_gyr != NULL)) {
+		trigger.chan = SENSOR_CHAN_GYRO_XYZ;
+		trigger.type = SENSOR_TRIG_DATA_READY;
+		lsm6dso->handler_drdy_gyr(dev, &trigger);
+	}
 
 #if defined(CONFIG_LSM6DSO_ENABLE_TEMP)
-		if ((status.tda) && (lsm6dso->handler_drdy_temp != NULL)) {
-			lsm6dso->handler_drdy_temp(dev, &drdy_trigger);
-		}
+	if ((int_srcs.drdy_temp) && (lsm6dso->handler_drdy_temp != NULL)) {
+		trigger.chan = SENSOR_CHAN_DIE_TEMP;
+		trigger.type = SENSOR_TRIG_DATA_READY;
+		lsm6dso->handler_drdy_temp(dev, &trigger);
+	}
 #endif
+
+	if (int_srcs.sleep_change) {
+		trigger.chan = SENSOR_CHAN_ACCEL_XYZ;
+
+		if (!int_srcs.sleep_state && lsm6dso->handler_motion_acc) {
+			trigger.type = SENSOR_TRIG_MOTION;
+			lsm6dso->handler_motion_acc(dev, &trigger);
+		} else if (int_srcs.sleep_state && lsm6dso->handler_stationary_acc) {
+			trigger.type = SENSOR_TRIG_STATIONARY;
+			lsm6dso->handler_stationary_acc(dev, &trigger);
+		}
 	}
 
 	gpio_pin_interrupt_configure_dt(&cfg->gpio_drdy,

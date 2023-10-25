@@ -14,6 +14,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/init.h>
+#include <stdlib.h>
 #include <string.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/__assert.h>
@@ -196,6 +197,85 @@ static int lsm6dso_accel_range_set(const struct device *dev, int32_t range)
 	return 0;
 }
 
+#if defined(CONFIG_LSM6DSO_TRIGGER)
+
+static inline int32_t sensor_ms2_to_mg(const struct sensor_value *ms2)
+{
+	int64_t nano_ms2 = (ms2->val1 * 1000000LL + ms2->val2) * 1000LL;
+
+	if (nano_ms2 > 0) {
+		return (nano_ms2 + SENSOR_G / 2) / SENSOR_G;
+	} else {
+		return (nano_ms2 - SENSOR_G / 2) / SENSOR_G;
+	}
+}
+
+static inline int lsm6dso_fs_to_mg(int fs, bool range_double) {
+	return (lsm6dso_accel_fs_map[fs] << range_double) * 1000;
+}
+
+static inline int lsm6dso_mg_to_wkup_ths_lsb(int mg) {
+	return mg / 64;
+}
+
+static inline int lsm6dso_mg_to_wkup_ths_reg(int mg, int lsb) {
+	return (mg + (lsb / 2)) / lsb;
+}
+
+int lsm6dso_accel_slope_th_set(const struct device *dev,
+				const struct sensor_value *val)
+{
+	const struct lsm6dso_config *cfg = dev->config;
+	stmdev_ctx_t *ctx = (stmdev_ctx_t *)&cfg->ctx;
+	int rc;
+
+	bool range_double = !!(cfg->accel_range & ACCEL_RANGE_DOUBLE);
+	lsm6dso_fs_xl_t fs;
+	int32_t slope_th_mg;
+	int lsb_mg;
+	uint8_t reg;
+
+	rc = lsm6dso_xl_full_scale_get(ctx, &fs);
+	if (rc < 0)
+		return rc;
+
+	slope_th_mg = abs(sensor_ms2_to_mg(val));
+
+	/* Ensure the requested threshold will fit within our current
+	 * range figure. */
+	if (slope_th_mg > lsm6dso_fs_to_mg(fs, range_double)) {
+		return -EINVAL;
+	}
+
+	/* The threshold register is in units of 1/64 FS */
+	lsb_mg = lsm6dso_mg_to_wkup_ths_lsb(lsm6dso_fs_to_mg(fs, range_double));
+	reg = lsm6dso_mg_to_wkup_ths_reg(slope_th_mg, lsb_mg);
+
+	LOG_INF("thresh=%d mg, fs=%u mg, reg=%d LSB", slope_th_mg,
+		    lsm6dso_fs_to_mg(fs, range_double), reg);
+
+	return lsm6dso_wkup_threshold_set(ctx, reg);
+}
+
+int lsm6dso_accel_slope_dur_set(const struct device *dev,
+				const struct sensor_value *val)
+{
+	const struct lsm6dso_config *cfg = dev->config;
+	stmdev_ctx_t *ctx = (stmdev_ctx_t *)&cfg->ctx;
+	uint8_t reg;
+
+	if (val->val1 < 0 || val->val1 > 3) {
+		return -ENOTSUP;
+	}
+
+	reg = val->val1 & 0x3;
+
+	LOG_INF("dur=%d, reg=%d", val->val1, reg);
+
+	return lsm6dso_wkup_dur_set(ctx, val->val1);
+}
+#endif
+
 static int lsm6dso_accel_config(const struct device *dev,
 				enum sensor_channel chan,
 				enum sensor_attribute attr,
@@ -206,6 +286,12 @@ static int lsm6dso_accel_config(const struct device *dev,
 		return lsm6dso_accel_range_set(dev, sensor_ms2_to_g(val));
 	case SENSOR_ATTR_SAMPLING_FREQUENCY:
 		return lsm6dso_accel_odr_set(dev, val->val1);
+#if defined(CONFIG_LSM6DSO_TRIGGER)
+	case SENSOR_ATTR_SLOPE_TH:
+		return lsm6dso_accel_slope_th_set(dev, val);
+	case SENSOR_ATTR_SLOPE_DUR:
+		return lsm6dso_accel_slope_dur_set(dev, val);
+#endif
 	default:
 		LOG_DBG("Accel attribute not supported.");
 		return -ENOTSUP;
