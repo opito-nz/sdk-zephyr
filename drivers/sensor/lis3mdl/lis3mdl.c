@@ -11,6 +11,7 @@
 #include <zephyr/sys/__assert.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/drivers/sensor.h>
+#include <zephyr/pm/device.h>
 #include <string.h>
 #include <zephyr/logging/log.h>
 
@@ -102,7 +103,7 @@ static const struct sensor_driver_api lis3mdl_driver_api = {
 	.channel_get = lis3mdl_channel_get,
 };
 
-int lis3mdl_init(const struct device *dev)
+static int lis3mdl_init(const struct device *dev)
 {
 	const struct lis3mdl_config *config = dev->config;
 	uint8_t chip_cfg[6];
@@ -162,6 +163,28 @@ int lis3mdl_init(const struct device *dev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_DEVICE
+static int lis3mdl_pm_action(const struct device *dev,
+			    enum pm_device_action action)
+{
+	const struct lis3mdl_config *config = dev->config;
+	uint8_t chip_cfg[2] = {LIS3MDL_REG_CTRL3, 0};
+
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		return lis3mdl_init(dev);
+	case PM_DEVICE_ACTION_SUSPEND:
+	case PM_DEVICE_ACTION_TURN_OFF:
+		chip_cfg[1] = LIS3MDL_MD_POWER_DOWN;
+		break;
+	default:
+		return -ENOTSUP;
+	}
+
+	return i2c_write_dt(&config->i2c, chip_cfg, sizeof(chip_cfg));
+}
+#endif
+
 #define LIS3MDL_DEFINE(inst)									\
 	static struct lis3mdl_data lis3mdl_data_##inst;						\
 												\
@@ -169,10 +192,17 @@ int lis3mdl_init(const struct device *dev)
 		.i2c = I2C_DT_SPEC_INST_GET(inst),						\
 		IF_ENABLED(CONFIG_LIS3MDL_TRIGGER,						\
 			   (.irq_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, irq_gpios, { 0 }),))	\
-	};											\
-												\
-	SENSOR_DEVICE_DT_INST_DEFINE(inst, lis3mdl_init, NULL,					\
-			      &lis3mdl_data_##inst, &lis3mdl_config_##inst, POST_KERNEL,	\
-			      CONFIG_SENSOR_INIT_PRIORITY, &lis3mdl_driver_api);		\
+	};											       \
+												       \
+	PM_DEVICE_DT_INST_DEFINE(inst, lis3mdl_pm_action); \
+												       \
+	SENSOR_DEVICE_DT_INST_DEFINE(inst,                 \
+				  lis3mdl_init, 					   \
+				  PM_DEVICE_DT_INST_GET(inst),		   \
+			      &lis3mdl_data_##inst, 			   \
+				  &lis3mdl_config_##inst, 			   \
+				  POST_KERNEL,						   \
+			      CONFIG_SENSOR_INIT_PRIORITY, 		   \
+				  &lis3mdl_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(LIS3MDL_DEFINE)
