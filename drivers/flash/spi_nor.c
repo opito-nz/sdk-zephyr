@@ -1167,9 +1167,13 @@ static int spi_nor_configure(const struct device *dev)
 	rc = spi_nor_rdsr(dev);
 	if (rc > 0 && (rc & SPI_NOR_WIP_BIT)) {
 		LOG_WRN("Waiting until flash is ready");
-		spi_nor_wait_until_ready(dev, WAIT_READY_REGISTER);
+		rc = spi_nor_wait_until_ready(dev, WAIT_READY_REGISTER);
 	}
 	release_device(dev);
+	if (rc < 0) {
+		LOG_ERR("Failed to wait until flash is ready (%d)", rc);
+		return -ENODEV;
+	}
 
 	/* now the spi bus is configured, we can verify SPI
 	 * connectivity by reading the JEDEC ID.
