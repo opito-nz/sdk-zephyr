@@ -1142,6 +1142,43 @@ static int setup_pages_layout(const struct device *dev)
 #endif /* CONFIG_FLASH_PAGE_LAYOUT */
 #endif /* CONFIG_SPI_NOR_SFDP_MINIMAL */
 
+
+#ifndef CONFIG_SPI_NOR_SFDP_RUNTIME
+static int wait_for_jedec_id(const struct device *dev, uint8_t *jedec_id)
+{
+	const struct spi_nor_config *cfg = dev->config;
+	const unsigned max_retries = CONFIG_SPI_NOR_JEDEC_READ_RETRY_COUNT;
+	int rc;
+
+	if (jedec_id == NULL)
+		return -EINVAL;
+
+	for (unsigned retry = 0; retry < max_retries; retry++) {
+		if (memcmp(jedec_id, cfg->jedec_id, SPI_NOR_MAX_ID_LEN) == 0) {
+			return 0;
+		}
+
+		LOG_WRN("JEDEC does not match expected, retry %u/%u",
+				retry + 1, max_retries);
+
+		k_busy_wait(CONFIG_SPI_NOR_JEDEC_READ_RETRY_DELAY);
+
+		rc = spi_nor_read_jedec_id(dev, jedec_id);
+		if (rc < 0) {
+			LOG_ERR("JEDEC ID read failed: %d", rc);
+			return -EIO;
+		}
+	}
+
+	LOG_ERR("Device id %02x %02x %02x does not match config %02x %02x %02x",
+			jedec_id[0], jedec_id[1], jedec_id[2],
+			cfg->jedec_id[0], cfg->jedec_id[1], cfg->jedec_id[2]);
+
+	return -ENODEV;
+}
+#endif
+
+
 /**
  * @brief Configure the flash
  *
@@ -1191,11 +1228,9 @@ static int spi_nor_configure(const struct device *dev)
 	 * device that has different parameters.
 	 */
 
-	if (memcmp(jedec_id, cfg->jedec_id, sizeof(jedec_id)) != 0) {
-		LOG_ERR("Device id %02x %02x %02x does not match config %02x %02x %02x",
-			jedec_id[0], jedec_id[1], jedec_id[2],
-			cfg->jedec_id[0], cfg->jedec_id[1], cfg->jedec_id[2]);
-		return -EINVAL;
+	rc = wait_for_jedec_id(dev, jedec_id);
+	if (rc != 0) {
+		return rc;
 	}
 #endif
 

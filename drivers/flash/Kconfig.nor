@@ -85,4 +85,18 @@ config SPI_NOR_IDLE_IN_DPD
 	  long periods, and when used the impact of waiting for mode
 	  enter and exit delays is acceptable.
 
+config SPI_NOR_JEDEC_READ_RETRY_COUNT
+	int "Number of times to retry JEDEC ID reads"
+	default 5
+	help
+	  Some flash devices require time to power up, and reading the JEDEC
+	  ID may fail during initialisation. This option allows the driver to
+	  retry reading the JEDEC ID multiple times before giving up.
+
+config SPI_NOR_JEDEC_READ_RETRY_DELAY
+	int "Delay between JEDEC ID read retries in us"
+	default 50000
+	help
+	  The delay between retries when reading the JEDEC ID.
+
 endif # SPI_NOR
