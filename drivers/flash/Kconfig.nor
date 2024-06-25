@@ -95,7 +95,7 @@ config SPI_NOR_JEDEC_READ_RETRY_COUNT
 
 config SPI_NOR_JEDEC_READ_RETRY_DELAY
 	int "Delay between JEDEC ID read retries in us"
-	default 50000
+	default 100000
 	help
 	  The delay between retries when reading the JEDEC ID.
 
