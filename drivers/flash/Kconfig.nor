@@ -87,7 +87,7 @@ config SPI_NOR_IDLE_IN_DPD
 
 config SPI_NOR_JEDEC_READ_RETRY_COUNT
 	int "Number of times to retry JEDEC ID reads"
-	default 5
+	default 10
 	help
 	  Some flash devices require time to power up, and reading the JEDEC
 	  ID may fail during initialisation. This option allows the driver to
