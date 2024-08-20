@@ -34,6 +34,8 @@
 #define REG_GPIO 0x09
 #define REG_IKAT 0x0A
 
+#define REG_IOCON_ODR BIT(2)
+
 #define MCP23SXX_ADDR 0x40
 #define MCP23SXX_READBIT 0x01
 

@@ -69,6 +69,32 @@ static int write_port_regs(const struct device *dev, uint8_t reg, uint16_t value
 }
 
 /**
+ * @brief Writes to the IOCON register of the mcp23xxx.
+ *
+ * IOCON is the only register that is not 16 bits wide on 16-pin devices; instead, it is mirrored in
+ * two adjacent memory locations. Because the underlying `write_fn` always does a 16-bit write for
+ * 16-pin devices, make sure we write the same value to both IOCON locations.
+ *
+ * @param dev The mcp23xxx device.
+ * @param value the IOCON value to write
+ *
+ * @return 0 if successful. Otherwise <0 will be returned.
+ */
+static int write_iocon(const struct device *dev, uint8_t value)
+{
+	struct mcp23xxx_drv_data *drv_data = dev->data;
+
+	uint16_t extended_value = value | (value << 8);
+	int ret = write_port_regs(dev, REG_IOCON, extended_value);
+
+	if (ret == 0) {
+		drv_data->reg_cache.iocon = extended_value;
+	}
+
+	return ret;
+}
+
+/**
  * @brief Setup the pin direction.
  *
  * @param dev The mcp23xxx device.
@@ -291,6 +317,13 @@ int gpio_mcp23xxx_init(const struct device *dev)
 	}
 
 	k_sem_init(&drv_data->lock, 1, 1);
+
+	/* Set interrupt output pin to open drain. */
+	err = write_iocon(dev, REG_IOCON_ODR);
+	if (err < 0) {
+		LOG_ERR("Error setting IOCON register (%d)", err);
+		return -EIO;
+	}
 
 	return 0;
 }
