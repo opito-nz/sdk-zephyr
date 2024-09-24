@@ -6,6 +6,6 @@
 if SOC_STM32U545XX
 
 config NUM_IRQS
-	default 114
+	default 126
 
 endif # SOC_STM32U545XX

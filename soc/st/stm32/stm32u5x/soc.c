@@ -43,7 +43,8 @@ static int stm32u5_init(void)
 	LL_AHB3_GRP1_EnableClock(LL_AHB3_GRP1_PERIPH_PWR);
 
 	/* For devices with USB C PD, we can disable the dead battery
-	 * pull-down behaviour. */
+	 * pull-down behaviour.
+	 */
 #if defined(UCPD1)
 	if (IS_ENABLED(CONFIG_DT_HAS_ST_STM32_UCPD_ENABLED) ||
 		!IS_ENABLED(CONFIG_USB_DEVICE_DRIVER)) {
