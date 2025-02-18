@@ -19,13 +19,15 @@
 #include <stmemsc.h>
 #include "lsm6dso_reg.h"
 
-#if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(st_lsm6dso, spi) || \
+	DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(st_lsm6dso32, spi)
 #include <zephyr/drivers/spi.h>
-#endif /* DT_ANY_INST_ON_BUS_STATUS_OKAY(spi) */
+#endif
 
-#if DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(st_lsm6dso, i2c) || \
+	DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(st_lsm6dso32, i2c)
 #include <zephyr/drivers/i2c.h>
-#endif /* DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c) */
+#endif
 
 #define LSM6DSO_EN_BIT					0x01
 #define LSM6DSO_DIS_BIT					0x00
@@ -39,10 +41,12 @@
 struct lsm6dso_config {
 	stmdev_ctx_t ctx;
 	union {
-#if DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(st_lsm6dso, i2c) || \
+	DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(st_lsm6dso32, i2c)
 		const struct i2c_dt_spec i2c;
 #endif
-#if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
+#if DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(st_lsm6dso, spi) || \
+	DT_HAS_COMPAT_ON_BUS_STATUS_OKAY(st_lsm6dso32, spi)
 		const struct spi_dt_spec spi;
 #endif
 	} stmemsc_cfg;
@@ -97,6 +101,8 @@ struct lsm6dso_data {
 	struct gpio_callback gpio_cb;
 	sensor_trigger_handler_t handler_drdy_acc;
 	const struct sensor_trigger *trig_drdy_acc;
+	sensor_trigger_handler_t handler_delta_acc;
+	const struct sensor_trigger *trig_delta_acc;
 	sensor_trigger_handler_t handler_drdy_gyr;
 	const struct sensor_trigger *trig_drdy_gyr;
 	sensor_trigger_handler_t handler_drdy_temp;

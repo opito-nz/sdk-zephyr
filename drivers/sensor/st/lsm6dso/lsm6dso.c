@@ -8,14 +8,11 @@
  * https://www.st.com/resource/en/datasheet/lsm6dso.pdf
  */
 
-#define DT_DRV_COMPAT st_lsm6dso
-
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/init.h>
 #include <string.h>
-#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/__assert.h>
 #include <zephyr/logging/log.h>
 
@@ -87,21 +84,6 @@ static int lsm6dso_gyro_range_to_fs_val(int32_t range)
 	}
 
 	return -EINVAL;
-}
-
-static inline int lsm6dso_reboot(const struct device *dev)
-{
-	const struct lsm6dso_config *cfg = dev->config;
-	stmdev_ctx_t *ctx = (stmdev_ctx_t *)&cfg->ctx;
-
-	if (lsm6dso_boot_set(ctx, 1) < 0) {
-		return -EIO;
-	}
-
-	/* Wait sensor turn-on time as per datasheet */
-	k_busy_wait(35 * USEC_PER_MSEC);
-
-	return 0;
 }
 
 static int lsm6dso_accel_set_fs_raw(const struct device *dev, uint8_t fs)
@@ -196,6 +178,68 @@ static int lsm6dso_accel_range_set(const struct device *dev, int32_t range)
 	return 0;
 }
 
+#if defined(CONFIG_LSM6DSO_TRIGGER)
+static int lsm6dso_accel_slope_config_th(const struct device *dev,
+			  enum sensor_attribute attr,
+			  const struct sensor_value *val)
+{
+	const struct lsm6dso_config *cfg = dev->config;
+	struct lsm6dso_data *data = dev->data;
+	stmdev_ctx_t *ctx = (stmdev_ctx_t *)&cfg->ctx;
+	int rc;
+	int32_t slope_th_ug, fs_ug;
+	bool range_double = !!(cfg->accel_range & ACCEL_RANGE_DOUBLE);
+	uint8_t wake_up_ths = 0;
+
+	slope_th_ug = abs(sensor_ms2_to_ug(val));
+
+	/* Ensure the threshold is within full scale. */
+	fs_ug = (lsm6dso_accel_fs_map[data->accel_fs] << range_double) * 1000000;
+	if (slope_th_ug > fs_ug) {
+		return -EINVAL;
+	}
+
+	/* Register is in units of 1/64 FS when WAKE_THS_W is 0. */
+	wake_up_ths = (slope_th_ug * 64) / fs_ug;
+	rc = lsm6dso_wkup_threshold_set(ctx, wake_up_ths);
+	if (rc < 0) {
+		LOG_DBG("failed to set accelerometer slope threshold");
+		return -EIO;
+	}
+
+	LOG_DBG("slope_th_ug: %d, fs_ug: %d, lsb: %d",
+				slope_th_ug, fs_ug, wake_up_ths);
+
+	return 0;
+}
+
+static int lsm6dso_accel_slope_config_dur(const struct device *dev,
+			  enum sensor_attribute attr,
+			  const struct sensor_value *val)
+{
+	const struct lsm6dso_config *cfg = dev->config;
+	stmdev_ctx_t *ctx = (stmdev_ctx_t *)&cfg->ctx;
+	int rc;
+	uint8_t wake_up_dur = 0;
+
+	/* Ensure number of samples is within range. */
+	if (val->val1 < 1 || val->val1 > 4) {
+		return -EINVAL;
+	}
+
+	wake_up_dur = val->val1 - 1;
+	rc = lsm6dso_wkup_dur_set(ctx, wake_up_dur);
+	if (rc < 0) {
+		LOG_DBG("failed to set accelerometer slope duration");
+		return -EIO;
+	}
+
+	LOG_DBG("slope_dur_samples: %d, slope_dur: %d", val->val1, wake_up_dur);
+
+	return 0;
+}
+#endif
+
 static int lsm6dso_accel_config(const struct device *dev,
 				enum sensor_channel chan,
 				enum sensor_attribute attr,
@@ -206,6 +250,12 @@ static int lsm6dso_accel_config(const struct device *dev,
 		return lsm6dso_accel_range_set(dev, sensor_ms2_to_g(val));
 	case SENSOR_ATTR_SAMPLING_FREQUENCY:
 		return lsm6dso_accel_odr_set(dev, val->val1);
+#if defined(CONFIG_LSM6DSO_TRIGGER)
+	case SENSOR_ATTR_SLOPE_TH:
+		return lsm6dso_accel_slope_config_th(dev, attr, val);
+	case SENSOR_ATTR_SLOPE_DUR:
+		return lsm6dso_accel_slope_config_dur(dev, attr, val);
+#endif
 	default:
 		LOG_DBG("Accel attribute not supported.");
 		return -ENOTSUP;
@@ -525,12 +575,12 @@ static inline int lsm6dso_magn_get_channel(enum sensor_channel chan,
 	}
 
 
-	sample[0] = sys_le16_to_cpu((int16_t)(data->ext_data[idx][0] |
-				    (data->ext_data[idx][1] << 8)));
-	sample[1] = sys_le16_to_cpu((int16_t)(data->ext_data[idx][2] |
-				    (data->ext_data[idx][3] << 8)));
-	sample[2] = sys_le16_to_cpu((int16_t)(data->ext_data[idx][4] |
-				    (data->ext_data[idx][5] << 8)));
+	sample[0] = (int16_t)(data->ext_data[idx][0] |
+			     (data->ext_data[idx][1] << 8));
+	sample[1] = (int16_t)(data->ext_data[idx][2] |
+			     (data->ext_data[idx][3] << 8));
+	sample[2] = (int16_t)(data->ext_data[idx][4] |
+			     (data->ext_data[idx][5] << 8));
 
 	switch (chan) {
 	case SENSOR_CHAN_MAGN_X:
@@ -568,8 +618,8 @@ static inline void lsm6dso_hum_convert(struct sensor_value *val,
 		return;
 	}
 
-	raw_val = sys_le16_to_cpu((int16_t)(data->ext_data[idx][0] |
-					  (data->ext_data[idx][1] << 8)));
+	raw_val = (int16_t)(data->ext_data[idx][0] |
+			   (data->ext_data[idx][1] << 8));
 
 	/* find relative humidty by linear interpolation */
 	rh = (ht->y1 - ht->y0) * raw_val + ht->x1 * ht->y0 - ht->x0 * ht->y1;
@@ -592,9 +642,9 @@ static inline void lsm6dso_press_convert(struct sensor_value *val,
 		return;
 	}
 
-	raw_val = sys_le32_to_cpu((int32_t)(data->ext_data[idx][0] |
-					  (data->ext_data[idx][1] << 8) |
-					  (data->ext_data[idx][2] << 16)));
+	raw_val = (int32_t)(data->ext_data[idx][0] |
+			   (data->ext_data[idx][1] << 8) |
+			   (data->ext_data[idx][2] << 16));
 
 	/* Pressure sensitivity is 4096 LSB/hPa */
 	/* Convert raw_val to val in kPa */
@@ -615,8 +665,8 @@ static inline void lsm6dso_temp_convert(struct sensor_value *val,
 		return;
 	}
 
-	raw_val = sys_le16_to_cpu((int16_t)(data->ext_data[idx][3] |
-					  (data->ext_data[idx][4] << 8)));
+	raw_val = (int16_t)(data->ext_data[idx][3] |
+			   (data->ext_data[idx][4] << 8));
 
 	/* Temperature sensitivity is 100 LSB/deg C */
 	val->val1 = raw_val / 100;
@@ -868,10 +918,6 @@ static int lsm6dso_init(const struct device *dev)
 	return 0;
 }
 
-#if DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) == 0
-#warning "LSM6DSO driver enabled without any devices"
-#endif
-
 /*
  * Device creation macro, shared by LSM6DSO_DEFINE_SPI() and
  * LSM6DSO_DEFINE_I2C().
@@ -955,4 +1001,10 @@ static int lsm6dso_init(const struct device *dev)
 			(LSM6DSO_CONFIG_I2C(inst)));			\
 	LSM6DSO_DEVICE_INIT(inst)
 
+#define DT_DRV_COMPAT st_lsm6dso
 DT_INST_FOREACH_STATUS_OKAY(LSM6DSO_DEFINE)
+#undef DT_DRV_COMPAT
+
+#define DT_DRV_COMPAT st_lsm6dso32
+DT_INST_FOREACH_STATUS_OKAY(LSM6DSO_DEFINE)
+#undef DT_DRV_COMPAT
