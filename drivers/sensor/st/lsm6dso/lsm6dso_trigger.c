@@ -398,17 +398,15 @@ int lsm6dso_init_interrupt(const struct device *dev)
 		return ret;
 	}
 
-	/* TODO: we need OD active low for our HW - make this a DT setting. */
+	/* Configure interrupt drive and active level. */
+	lsm6dso_ctrl3_c_t ctrl3_c = {
+		.h_lactive = cfg->int_active_low,
+		.pp_od = cfg->int_open_drain,
 
-	lsm6dso_ctrl3_c_t ctrl3_c;
-	ret = lsm6dso_read_reg(ctx, LSM6DSO_CTRL3_C, (uint8_t *)&ctrl3_c, 1);
-	if (ret < 0) {
-		LOG_ERR("Failed to read CTRL3_C");
-		return ret;
-	}
+		/* This is the default value after reset. */
+		.if_inc = 1
+	};
 
-	ctrl3_c.h_lactive = 1;
-	ctrl3_c.pp_od = 1;
 	ret = lsm6dso_write_reg(ctx, LSM6DSO_CTRL3_C, (uint8_t *)&ctrl3_c, 1);
 	if (ret < 0) {
 		LOG_ERR("Failed to write CTRL3_C");
