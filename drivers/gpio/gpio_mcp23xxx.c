@@ -426,7 +426,7 @@ static void mcp23xxx_work_handler(struct k_work *work)
 		 *   low again. This causes a second ISR to be scheduled, which then won't
 		 *   find any active interrupts if the callback has disabled the level interrupt.
 		 */
-		LOG_ERR("Spurious interrupt");
+		LOG_DBG("Spurious interrupt");
 		goto fail;
 	}
 
