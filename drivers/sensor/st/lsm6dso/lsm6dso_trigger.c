@@ -385,12 +385,39 @@ int lsm6dso_init_interrupt(const struct device *dev)
 		return ret;
 	}
 
-	/* Configure interrupt drive and active level. */
-	lsm6dso_ctrl3_c_t ctrl3_c = {.h_lactive = cfg->int_active_low,
-				     .pp_od = cfg->int_open_drain,
+	/*
+	 * Configure interrupt drive and active level.
+	 *
+	 * Read-modify-write, because a blind write zeroes every bit it does not
+	 * name -- including BDU (CTRL3_C bit 6), which lsm6dso_init_chip() has
+	 * already set by the time this runs. Any LSM6DSO with irq-gpios plus
+	 * int-open-drain/int-active-low therefore ended up running with BDU off.
+	 *
+	 * With BDU clear the 16-bit output registers can refresh between the low
+	 * and high byte of a burst read, so a sample tears: a fresh low byte
+	 * with a stale high byte, landing ~+/-256 LSB out for exactly one
+	 * sample. It only bites on an axis whose low byte happens to sit near a
+	 * 0x00/0xFF rollover, which is why it presents as sporadic sensor noise
+	 * rather than as a bug -- two identical rigs looked completely different
+	 * purely because their gyro bias sat 1-2 counts from the boundary on one
+	 * and 60-90 counts away on the other.
+	 *
+	 * Refs Opito/opito-zephyr#77, which has the measurements.
+	 *
+	 * OPITO-LOCAL PATCH: this defect is not present in upstream Zephyr main,
+	 * so there is nothing to send upstream. Drop this patch when we move to
+	 * a Zephyr revision that already gets CTRL3_C right.
+	 */
+	lsm6dso_ctrl3_c_t ctrl3_c;
 
-				     /* This is the default value after reset. */
-				     .if_inc = 1};
+	ret = lsm6dso_read_reg(ctx, LSM6DSO_CTRL3_C, (uint8_t *)&ctrl3_c, 1);
+	if (ret < 0) {
+		LOG_ERR("Failed to read CTRL3_C");
+		return ret;
+	}
+
+	ctrl3_c.h_lactive = cfg->int_active_low;
+	ctrl3_c.pp_od = cfg->int_open_drain;
 
 	ret = lsm6dso_write_reg(ctx, LSM6DSO_CTRL3_C, (uint8_t *)&ctrl3_c, 1);
 	if (ret < 0) {
